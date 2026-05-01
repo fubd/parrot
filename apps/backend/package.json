@@ -9,7 +9,7 @@
     "type-check": "tsc --project tsconfig.json --noEmit",
     "lint": "oxlint src",
     "lint:fix": "oxlint --fix src && oxfmt --write src",
-    "migrate": "bun src/db/migrate.ts"
+    "migrate": "bun src/db/run-migrations.ts"
   },
   "dependencies": {
     "hono": "^4.10.4"

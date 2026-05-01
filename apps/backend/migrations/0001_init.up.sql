@@ -16,7 +16,7 @@ VALUES
   (
     'full-stack-foundation',
     'Full-stack foundation is ready',
-    'The starter now ships with React, Hono, raw SQL through Drizzle, MySQL, nginx, Docker Compose, and Makefile automation.',
+    'The starter now ships with React, Hono, raw SQL through Bun.sql, MySQL, nginx, Docker Compose, and Makefile automation.',
     'This branch turns the original frontend starter into a deployable full-stack baseline with a production-facing gateway and containerized services.',
     '2026-03-20 10:00:00'
   ),
@@ -30,7 +30,7 @@ VALUES
   (
     'mysql-with-raw-sql',
     'MySQL access stays close to SQL',
-    'Database reads and writes are intentionally expressed as SQL statements, while Drizzle provides the connection layer and SQL builder ergonomics.',
+    'Database reads and writes are intentionally expressed as SQL statements, while Bun.sql provides the connection and execution layer.',
     'That keeps the backend easy to reason about and avoids hiding important database behavior behind extra repository abstractions.',
     '2026-03-22 08:30:00'
   )

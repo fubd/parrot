@@ -3,7 +3,6 @@ import {HTTPException} from 'hono/http-exception';
 import {cors} from 'hono/cors';
 import {logger} from 'hono/logger';
 import {db, closeDatabase, waitForDatabase} from './db/client.js';
-import {migrateDatabase} from './db/migrate.js';
 import {env} from './env.js';
 
 type SummaryRow = {
@@ -135,7 +134,6 @@ app.post('/api/v1/meta', context => {
   });
 });
 
-
 let isShuttingDown = false;
 
 const shutdown = async (signal: string) => {
@@ -148,7 +146,6 @@ const shutdown = async (signal: string) => {
 };
 
 await waitForDatabase();
-await migrateDatabase();
 
 const server = Bun.serve({
   fetch: app.fetch,

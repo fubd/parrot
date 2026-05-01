@@ -43,7 +43,7 @@ make db-restore BACKUP_FILE=backups/mysql/parrot_20260101_030000.sql.gz
 - `index.ts` — All routes, middleware (CORS, logging, error handler), graceful shutdown. Routes use `Bun.sql` tagged template literals for raw SQL queries — no ORM.
 - `env.ts` — Validates required env vars at startup, exports typed `env` object.
 - `db/client.ts` — `Bun.sql` connection pool with `waitForDatabase()` retry loop.
-- `db/migrate.ts` — Custom migration runner: `GET_LOCK` for concurrency, `schema_migrations` table for idempotency, one transaction per file for atomicity. Parses SQL statements respecting strings and comments.
+- `db/run-migrations.ts` — golang-migrate wrapper. It builds the MySQL migration URL, bootstraps old `schema_migrations` state into `parrot_schema_migrations` when needed, then delegates execution to the `migrate` CLI.
 
 **Frontend** (`apps/frontend/src/`):
 
@@ -53,7 +53,7 @@ make db-restore BACKUP_FILE=backups/mysql/parrot_20260101_030000.sql.gz
 - CSS Modules (`.module.less`) for all component styles.
 - `components/ErrorBoundary.tsx` catches lazy-load chunk failures.
 
-**API convention:** All `/api/*` endpoints use POST method. Only `/healthz` uses GET (consumed by Docker healthcheck and nginx).
+**API convention:** All `/api/*` endpoints use POST method. Only `/healthz` uses GET for Docker healthchecks and nginx.
 
 **Docker setup:**
 
@@ -62,12 +62,12 @@ make db-restore BACKUP_FILE=backups/mysql/parrot_20260101_030000.sql.gz
 
 **Backend dev hot reload:** The backend container runs with `bun --watch` and mounts `apps/backend/src/` and `apps/backend/migrations/` as volumes. On Linux (CI/CD, remote servers), file changes trigger automatic process restart. On macOS Docker, VirtioFS does not propagate file system events to inotify, so `--watch` is inactive — use `make restart` instead.
 
-**Base images** are synced to Aliyun ACR via `make sync-base-images`. Shared base repositories use reusable names (`base-bun`, `base-nginx`, `base-mysql`) instead of project-specific prefixes. `make start` assumes those base images already exist in ACR. Production builds target `linux/amd64`.
+**Base images** are synced to Aliyun ACR via `make sync-base-images`. Shared base repositories use reusable names (`base-bun`, `base-migrate`, `base-nginx`, `base-mysql`) instead of project-specific prefixes. `make start` assumes those base images already exist in ACR. Production builds target `linux/amd64`.
 
 ## Key Conventions
 
 - **Package manager:** Bun everywhere — `bun install`, `bun run`, `bun.lock`. No npm or Node.js.
-- **Migrations:** Only add new files in `apps/backend/migrations/` with `NNNN_description.sql` naming. Never modify existing migration files. Use `make create-migration NAME=...` to get auto-numbered files.
+- **Migrations:** Only add new paired files in `apps/backend/migrations/` with `NNNN_description.up.sql` and `NNNN_description.down.sql` naming. Never modify existing migration files. Use `make create-migration NAME=...` to get auto-numbered files.
 - **SQL:** Raw SQL via `Bun.sql` tagged templates, no query builders or ORMs. Type results with inline `TypeRow[]` generics.
 - **Environment variables:** Backend reads from `process.env` via `env.ts` with validation and defaults. Inside Docker, `DATABASE_HOST` is overridden to `mysql`. All secrets live in `.env` (gitignored).
 - **Host-first workflow:** `make install`, `make build`, `make frontend-build`, `make lint`, `make format`, `make format-check`, `make type-check`, and `make watch` all run through host Bun. The watcher lifecycle is managed internally by `make start`, `make down`, and `make restart`.

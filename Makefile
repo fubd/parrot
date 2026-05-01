@@ -15,6 +15,7 @@ PKG_REGISTRY ?= https://registry.npmmirror.com
 BUILD_RETRY_COUNT ?= 3
 BUILD_RETRY_DELAY ?= 5
 PUSH_BUILD_CACHE ?= 0
+MIGRATE_VERSION ?= v4.19.1
 
 LOCAL_COMPOSE := $(COMPOSE) --env-file $(STACK_ENV_FILE) -f $(LOCAL_COMPOSE_FILE)
 WATCH_CONTAINER := parrot-watch
@@ -29,6 +30,7 @@ endif
 
 IMAGE_NAMESPACE ?= $(ALIYUN_USERNAME)
 BASE_BUN_IMAGE ?= $(ALIYUN_REGISTRY)/$(IMAGE_NAMESPACE)/base-bun:1-alpine
+BASE_MIGRATE_IMAGE ?= $(ALIYUN_REGISTRY)/$(IMAGE_NAMESPACE)/base-migrate:$(MIGRATE_VERSION)
 BASE_NGINX_IMAGE ?= $(ALIYUN_REGISTRY)/$(IMAGE_NAMESPACE)/base-nginx:1.27-alpine
 BASE_MYSQL_IMAGE ?= $(ALIYUN_REGISTRY)/$(IMAGE_NAMESPACE)/base-mysql:8.4.4
 BACKEND_IMAGE ?= $(ALIYUN_REGISTRY)/$(IMAGE_NAMESPACE)/parrot-backend:$(VERSION)
@@ -114,12 +116,15 @@ create-migration:
 ifndef NAME
 	$(error NAME is required. Usage: make create-migration NAME=add_users_table)
 endif
-	@last=$$(ls apps/backend/migrations/*.sql 2>/dev/null | sed 's|.*/||;s/_.*//' | sort -n | tail -1); \
+	@last=$$(ls apps/backend/migrations/*.up.sql 2>/dev/null | sed 's|.*/||;s/_.*//' | sort -n | tail -1); \
 	next=$$((10#$${last:-0} + 1)); \
-	file="apps/backend/migrations/$$(printf '%04d' $$next)_$(NAME).sql"; \
-	basename=$$(basename "$$file" .sql); \
-	printf '%s\n%s\n' "-- $$basename" "" > "$$file"; \
-	echo "Created: $$file"
+	versioned_name="$$(printf '%04d' $$next)_$(NAME)"; \
+	up_file="apps/backend/migrations/$${versioned_name}.up.sql"; \
+	down_file="apps/backend/migrations/$${versioned_name}.down.sql"; \
+	printf '%s\n%s\n' "-- $${versioned_name} up" "" > "$$up_file"; \
+	printf '%s\n%s\n' "-- $${versioned_name} down" "" > "$$down_file"; \
+	echo "Created: $$up_file"; \
+	echo "Created: $$down_file"
 
 # ── frontend watcher ────────────────────────────────────────────
 # Runs on the host with Bun so file changes are visible immediately
@@ -227,6 +232,7 @@ acr-login:
 
 sync-base-images: guard-stack-env acr-login
 	docker buildx imagetools create --platform linux/amd64,linux/arm64 --tag $(BASE_BUN_IMAGE) docker.io/oven/bun:1-alpine
+	docker buildx imagetools create --platform linux/amd64,linux/arm64 --tag $(BASE_MIGRATE_IMAGE) docker.io/migrate/migrate:$(MIGRATE_VERSION)
 	docker buildx imagetools create --platform linux/amd64,linux/arm64 --tag $(BASE_NGINX_IMAGE) docker.io/library/nginx:1.27-alpine
 	docker buildx imagetools create --platform linux/amd64,linux/arm64 --tag $(BASE_MYSQL_IMAGE) docker.io/library/mysql:8.4.4
 
@@ -249,6 +255,7 @@ push: guard-stack-env acr-login install frontend-build
 		docker buildx build --platform $(BUILD_PLATFORMS) --push \
 			$(BACKEND_CACHE_ARGS) \
 			--build-arg BASE_BUN_IMAGE=$(BASE_BUN_IMAGE) \
+			--build-arg MIGRATE_IMAGE=$(BASE_MIGRATE_IMAGE) \
 			--build-arg BUN_CONFIG_REGISTRY=$(PKG_REGISTRY) \
 			-t $(BACKEND_IMAGE) \
 			-f apps/backend/Dockerfile . && break; \
@@ -280,9 +287,10 @@ push: guard-stack-env acr-login install frontend-build
 # ── remote ──────────────────────────────────────────────────────
 
 remote-sync: guard-stack-env
-	ssh $(REMOTE_HOST) "mkdir -p $(REMOTE_PATH) $(REMOTE_PATH)/scripts"
+	ssh $(REMOTE_HOST) "mkdir -p $(REMOTE_PATH) $(REMOTE_PATH)/scripts $(REMOTE_PATH)/apps/backend/migrations"
 	scp $(DEPLOY_COMPOSE_FILE) $(REMOTE_HOST):$(REMOTE_PATH)/$(DEPLOY_COMPOSE_FILE)
 	scp $(STACK_ENV_FILE) $(REMOTE_HOST):$(REMOTE_PATH)/.env
+	scp apps/backend/migrations/*.sql $(REMOTE_HOST):$(REMOTE_PATH)/apps/backend/migrations/
 	scp scripts/mysql-backup.sh scripts/mysql-restore.sh scripts/setup-backup-cron.sh $(REMOTE_HOST):$(REMOTE_PATH)/scripts/
 	ssh $(REMOTE_HOST) "chmod +x $(REMOTE_PATH)/scripts/mysql-backup.sh $(REMOTE_PATH)/scripts/mysql-restore.sh $(REMOTE_PATH)/scripts/setup-backup-cron.sh"
 

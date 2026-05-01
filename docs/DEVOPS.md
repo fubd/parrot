@@ -32,8 +32,11 @@
 本地开发加表的完整流程：
 
 ```bash
-# 1. 新建迁移文件（序号接续已有的最大值）
-cat > apps/backend/migrations/0004_add_users_table.sql << 'EOF'
+# 1. 新建迁移文件（会生成 up/down 两个文件）
+make create-migration NAME=add_users_table
+
+# 2. 编辑 up 文件
+cat > apps/backend/migrations/0004_add_users_table.up.sql << 'EOF'
 CREATE TABLE users (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   email VARCHAR(255) NOT NULL UNIQUE,
@@ -42,10 +45,15 @@ CREATE TABLE users (
 );
 EOF
 
-# 2. 重启服务（自动触发迁移）
-make restart
+# 3. 编辑 down 文件
+cat > apps/backend/migrations/0004_add_users_table.down.sql << 'EOF'
+DROP TABLE IF EXISTS users;
+EOF
 
-# 3. 验证表已创建
+# 4. 执行迁移
+make compose-migrate
+
+# 5. 验证表已创建
 docker compose --env-file .env exec mysql \
   mysql -uroot -p"$MYSQL_ROOT_PASSWORD" parrot \
   -e "SHOW TABLES; DESCRIBE users;"
@@ -54,8 +62,8 @@ docker compose --env-file .env exec mysql \
 **注意**：
 
 - 永远不要修改已有的迁移文件，只新增
-- `make start` / `make restart` 都会自动执行迁移，无需手动操作
-- 迁移是幂等的，已执行过不会重复跑
+- `make start` / `make restart` 会先执行 `make compose-migrate`
+- 迁移由 golang-migrate 执行，已执行版本不会重复跑
 
 ### 场景二：首次部署到生产服务器
 
@@ -92,6 +100,7 @@ make remote-setup-backup-cron
 基础镜像统一使用不带项目名前缀的共享仓库名，方便其他项目复用：
 
 - `${ALIYUN_REGISTRY}/${IMAGE_NAMESPACE}/base-bun:1-alpine`
+- `${ALIYUN_REGISTRY}/${IMAGE_NAMESPACE}/base-migrate:v4.19.1`
 - `${ALIYUN_REGISTRY}/${IMAGE_NAMESPACE}/base-nginx:1.27-alpine`
 - `${ALIYUN_REGISTRY}/${IMAGE_NAMESPACE}/base-mysql:8.4.4`
 
@@ -99,12 +108,6 @@ make remote-setup-backup-cron
 
 ```bash
 make sync-base-images
-```
-
-如果只希望在缺失时自动补齐，使用：
-
-```bash
-
 ```
 
 本地开发的 `make start` 默认不会再检查 ACR 中的基础镜像是否存在；如果 ACR 尚未初始化，请先手动执行一次 `make sync-base-images`。
@@ -215,7 +218,7 @@ make remote-setup-backup-cron
 
 **不要用 DataGrip 等工具直接改表结构。** 原因：
 
-- 迁移系统通过 `schema_migrations` 表记录已执行的变更，GUI 工具绕过了这个机制
+- 迁移系统通过 `parrot_schema_migrations` 表记录已执行的变更，GUI 工具绕过了这个机制
 - 直接改库后，其他开发者 `make start` 不会拿到你的变更，生产部署也不会执行
 - 迁移文件是唯一的数据库结构变更来源，它就是"数据库的 Git"
 
@@ -242,10 +245,12 @@ make create-migration NAME=描述  →  编辑 SQL  →  make compose-migrate  �
 
 ```bash
 make create-migration NAME=add_users_table
-# → Created: apps/backend/migrations/0004_add_users_table.sql
+# → Created: apps/backend/migrations/0004_add_users_table.up.sql
+# → Created: apps/backend/migrations/0004_add_users_table.down.sql
 
 make create-migration NAME=add_users_status
-# → Created: apps/backend/migrations/0005_add_users_status.sql
+# → Created: apps/backend/migrations/0005_add_users_status.up.sql
+# → Created: apps/backend/migrations/0005_add_users_status.down.sql
 ```
 
 ### 添加表
@@ -254,10 +259,10 @@ make create-migration NAME=add_users_status
 make create-migration NAME=add_users_table
 ```
 
-编辑生成的文件：
+编辑生成的 `.up.sql` 文件：
 
 ```sql
--- 0004_add_users_table
+-- 0004_add_users_table.up.sql
 
 CREATE TABLE users (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -265,6 +270,14 @@ CREATE TABLE users (
   name VARCHAR(100) NOT NULL DEFAULT '',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+```
+
+编辑生成的 `.down.sql` 文件：
+
+```sql
+-- 0004_add_users_table.down.sql
+
+DROP TABLE IF EXISTS users;
 ```
 
 ```bash
@@ -279,7 +292,7 @@ make create-migration NAME=add_users_status
 ```
 
 ```sql
--- 0005_add_users_status
+-- 0005_add_users_status.up.sql
 
 ALTER TABLE users
   ADD COLUMN status ENUM('active', 'inactive') NOT NULL DEFAULT 'active' AFTER name,
@@ -293,7 +306,7 @@ make create-migration NAME=widen_users_name
 ```
 
 ```sql
--- 0006_widen_users_name
+-- 0006_widen_users_name.up.sql
 
 ALTER TABLE users
   MODIFY COLUMN name VARCHAR(200) NOT NULL DEFAULT '';
@@ -306,7 +319,7 @@ make create-migration NAME=drop_users_avatar
 ```
 
 ```sql
--- 0007_drop_users_avatar
+-- 0007_drop_users_avatar.up.sql
 
 ALTER TABLE users
   DROP COLUMN avatar_url;
@@ -319,7 +332,7 @@ make create-migration NAME=drop_legacy_logs
 ```
 
 ```sql
--- 0008_drop_legacy_logs
+-- 0008_drop_legacy_logs.up.sql
 
 DROP TABLE IF EXISTS legacy_logs;
 ```
@@ -331,7 +344,7 @@ make create-migration NAME=add_users_status_idx
 ```
 
 ```sql
--- 0009_add_users_status_idx
+-- 0009_add_users_status_idx.up.sql
 
 ALTER TABLE users
   ADD INDEX idx_users_status (status, created_at DESC);
@@ -346,32 +359,185 @@ make compose-migrate
 # 确认迁移已记录
 docker compose --env-file .env exec mysql \
   mysql -uroot -p"$MYSQL_ROOT_PASSWORD" parrot \
-  -e "SELECT * FROM schema_migrations ORDER BY executed_at;"
+  -e "SELECT * FROM parrot_schema_migrations ORDER BY version;"
 
 # 3. 在 DataGrip 中连接 localhost:26032，检查表结构是否符合预期
 ```
 
+### 数据库初始化
+
+**全新项目首次启动**时，数据库初始化完全自动化：
+
+```bash
+# 1. 确保 .env 已配置（复制 .env.example 并填写）
+cp .env.example .env
+
+# 2. 启动项目（自动完成：安装依赖 → 构建前端 → 构建镜像 → 初始化数据库 → 启动服务）
+make start
+```
+
+`make start` 内部流程：
+
+1. `install` — 安装依赖
+2. `frontend-build` — 构建前端资源
+3. `compose-build` — 构建 Docker 镜像
+4. **`compose-migrate`** — 执行数据库迁移（关键步骤）
+   - 启动 MySQL 容器并等待就绪
+   - 运行 golang-migrate，按版本号顺序执行所有 `*.up.sql` 文件
+   - 首次执行会创建 `parrot_schema_migrations` 版本跟踪表
+   - 应用 `0001_init.up.sql`：创建 `news_posts` 表并插入种子数据
+   - 应用后续迁移（索引、优化等）
+5. 启动 backend + nginx 容器
+6. 启动前端开发监听
+
+**已参与过开发的项目**，只需：
+
+```bash
+make start     # 自动运行 compose-migrate，仅执行未应用的新版本
+```
+
+**生产服务器首次部署**：
+
+```bash
+# 构建镜像、同步文件、执行迁移、启动服务
+VERSION=1.0.0 make remote-deploy
+```
+
+> `remote-deploy` 会在服务器上依次完成：拉取镜像 → 启动 MySQL → 运行迁移 → 启动 backend + nginx → 健康检查。
+
 ### 迁移机制
 
-迁移文件位于 `apps/backend/migrations/`，以 `NNNN_description.sql` 命名，按文件名字典序执行。
+迁移文件位于 `apps/backend/migrations/`，以 `NNNN_description.up.sql` / `NNNN_description.down.sql` 成对命名，由 golang-migrate CLI 按版本号顺序执行。
 
 当前迁移：
 
-- `0001_init.sql` — 创建 `news_posts` 表并插入初始种子数据
-- `0002_add_indexes.sql` — 添加复合索引 `(is_published, published_at DESC)`
-- `0003_drop_redundant_index.sql` — 移除被复合索引覆盖的单列索引
+- `0001_init.up.sql` — 创建 `news_posts` 表并插入初始种子数据
+- `0002_add_indexes.up.sql` — 添加复合索引 `(is_published, published_at DESC)`
+- `0003_drop_redundant_index.up.sql` — 移除被复合索引覆盖的单列索引
 
 迁移运行时特性：
 
-- **幂等**：已执行的文件记录在 `schema_migrations` 表，不会重复执行
-- **原子性**：每个 `.sql` 文件在一个事务中执行，任意语句失败则整体回滚
-- **并发安全**：获取数据库级别排他锁后执行，防止多实例竞争
+- **幂等**：已执行版本记录在 `parrot_schema_migrations` 表，不会重复执行
+- **原子性**：每个迁移版本在一个事务中执行（MySQL DDL 会隐式提交，golang-migrate 会拆分多语句文件为逐个事务）
+- **并发安全**：golang-migrate 获取 MySQL 迁移锁，防止多实例同时执行
+- **旧库兼容**：若旧 `schema_migrations` 表存在且新表不存在，`run-migrations.ts` 会自动读取旧版本号并 force 到 `parrot_schema_migrations`，再继续执行后续新迁移
 
-### 规则
+### 迁移操作
+
+#### 执行迁移（最常用）
+
+```bash
+make compose-migrate
+```
+
+等价于手动执行：
+
+```bash
+docker compose --env-file .env run --rm --no-deps backend bun run migrate
+# 默认执行 'up'：应用所有未执行的 up 迁移
+```
+
+#### 查看当前版本与状态
+
+```bash
+# 查看已执行的迁移版本
+docker compose --env-file .env exec mysql \
+  mysql -uroot -p"$MYSQL_ROOT_PASSWORD" parrot \
+  -e "SELECT version, dirty FROM parrot_schema_migrations;"
+```
+
+`dirty` 字段含义：
+
+- `0` — 正常状态，迁移执行成功
+- `1` — **脏状态**：上一次迁移执行失败，数据库可能处于不一致状态，需立即修复
+
+#### 回滚迁移
+
+```bash
+# 回滚 1 个版本
+docker compose --env-file .env run --rm --no-deps backend bun run migrate down 1
+
+# 回滚所有迁移（回到空库）
+docker compose --env-file .env run --rm --no-deps backend bun run migrate down -1
+```
+
+> ⚠️ 回滚会执行对应版本的 `.down.sql`，请确认 down 文件内容正确。不可安全回滚的迁移应在 down 文件中写 no-op 注释。
+
+#### 强制跳转到指定版本（修复脏状态）
+
+当迁移执行失败导致 `dirty=1` 时，需手动修复：
+
+```bash
+# 1. 先确认当前数据库结构与哪个迁移版本一致
+docker compose --env-file .env exec mysql \
+  mysql -uroot -p"$MYSQL_ROOT_PASSWORD" parrot \
+  -e "SHOW TABLES; DESCRIBE news_posts;"
+
+# 2. 强制标记为对应版本（无需执行 SQL，仅修改版本号）
+docker compose --env-file .env run --rm --no-deps backend bun run migrate force 3
+
+# 3. 清除 dirty 状态后，重新执行迁移
+make compose-migrate
+```
+
+> 常见原因：手动改过表结构导致 up 文件中的 DDL 与实际结构冲突（如"Table already exists"）。修复实际结构后，用 force 校准版本号，再重新执行迁移。
+
+#### 跳转到指定版本
+
+```bash
+# 向前或向后迁移到指定版本（自动选择合适的 up/down 方向）
+docker compose --env-file .env run --rm --no-deps backend bun run migrate goto 2
+```
+
+### 迁移规则
 
 - **永远不要修改已有的迁移文件**，只新增。已执行的迁移被其他环境依赖，修改会导致不一致
 - 序号必须递增且不重复（查看现有文件确定下一个编号）
-- 一个迁移文件只做一件事，方便定位和回滚
+- 一个迁移版本只做一件事，方便定位和回滚
+- 每个版本都要保留 `.up.sql` 和 `.down.sql`；不可安全回滚时，在 down 文件中写明 no-op 注释
+- **迁移文件是唯一的数据库结构变更来源**，它就是"数据库的 Git"
+
+### 日常维护
+
+#### 查看连接数与运行状态
+
+```bash
+# 查看当前连接数
+docker compose --env-file .env exec mysql \
+  mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SHOW PROCESSLIST;"
+
+# 查看数据库大小
+docker compose --env-file .env exec mysql \
+  mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "
+    SELECT table_schema AS 'Database',
+           ROUND(SUM(data_length + index_length) / 1024 / 1024, 2) AS 'Size (MB)'
+    FROM information_schema.tables
+    WHERE table_schema = 'parrot'
+    GROUP BY table_schema;"
+```
+
+#### 慢查询排查
+
+```bash
+# 临时开启慢查询日志（重启后失效）
+docker compose --env-file .env exec mysql \
+  mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "
+    SET GLOBAL slow_query_log = 'ON';
+    SET GLOBAL long_query_time = 2;
+    SET GLOBAL log_queries_not_using_indexes = 'ON';"
+```
+
+#### 清理 binlog 释放磁盘空间
+
+```bash
+# 查看 binlog 占用
+docker compose --env-file .env exec mysql \
+  mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SHOW BINARY LOGS;"
+
+# 清理 3 天前的 binlog（在 mysql 容器内执行）
+docker compose --env-file .env exec mysql \
+  mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "PURGE BINARY LOGS BEFORE NOW() - INTERVAL 3 DAY;"
+```
 
 ---
 

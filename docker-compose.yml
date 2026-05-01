@@ -8,13 +8,14 @@ services:
       dockerfile: apps/backend/Dockerfile
       args:
         BASE_BUN_IMAGE: ${ALIYUN_REGISTRY}/${IMAGE_NAMESPACE}/base-bun:1-alpine
+        MIGRATE_IMAGE: ${ALIYUN_REGISTRY}/${IMAGE_NAMESPACE}/base-migrate:${MIGRATE_VERSION:-v4.19.1}
     restart: unless-stopped
     init: true
     command: ['bun', '--watch', './src/index.ts']
     environment:
       APP_NAME: ${APP_NAME}
       VERSION: ${VERSION}
-      NODE_ENV: production
+      NODE_ENV: ${NODE_ENV:-development}
       PORT: 26031
       BACKEND_PORT: ${BACKEND_PORT}
       MYSQL_PORT: ${MYSQL_PORT}

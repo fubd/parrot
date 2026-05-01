@@ -25,8 +25,8 @@ const News: React.FC = () => {
     const loadNews = async () => {
       const result = await request<NewsData>('/api/v1/news');
       if (!cancelled) {
-        if (result.success) {
-          setItems(result.data!.items);
+        if (result.success && result.data) {
+          setItems(result.data.items);
         }
         setLoading(false);
       }

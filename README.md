@@ -56,8 +56,8 @@ parrot/
 │   │   │   ├── env.ts          # 环境变量验证
 │   │   │   └── db/
 │   │   │       ├── client.ts   # Bun.sql 连接池 + 健康等待
-│   │   │       └── migrate.ts  # 迁移运行时（事务 + 锁 + 幂等）
-│   │   ├── migrations/         # SQL 迁移文件（按序号前缀命名）
+│   │   │       └── run-migrations.ts  # golang-migrate 包装器 + 旧迁移表 bootstrap
+│   │   ├── migrations/         # golang-migrate SQL 迁移（*.up.sql / *.down.sql）
 │   │   ├── Dockerfile          # 包含 wget + HEALTHCHECK
 │   │   ├── package.json
 │   │   └── tsconfig.json
@@ -199,19 +199,20 @@ make install       # 安装 / 更新依赖（bun install）
 
 ### 迁移机制
 
-迁移文件位于 `apps/backend/migrations/`，以 `NNNN_description.sql` 命名，按文件名字典序执行。
+迁移文件位于 `apps/backend/migrations/`，使用 golang-migrate 命名：
+`NNNN_description.up.sql` / `NNNN_description.down.sql`。业务查询仍使用 Bun.SQL，迁移执行交给 golang-migrate CLI。
 
 当前迁移：
 
-- `0001_init.sql` — 创建 `news_posts` 表并插入初始种子数据
-- `0002_add_indexes.sql` — 添加复合索引 `(is_published, published_at DESC)`
-- `0003_drop_redundant_index.sql` — 移除被复合索引覆盖的单列索引
+- `0001_init.up.sql` — 创建 `news_posts` 表并插入初始种子数据
+- `0002_add_indexes.up.sql` — 添加复合索引 `(is_published, published_at DESC)`
+- `0003_drop_redundant_index.up.sql` — 移除被复合索引覆盖的单列索引
 
 迁移运行时特性：
 
-- **幂等**：已执行的文件记录在 `schema_migrations` 表，不会重复执行
-- **原子性**：每个 `.sql` 文件在一个事务中执行，任意语句失败则整体回滚
-- **并发安全**：获取数据库级别排他锁后执行，防止多实例竞争
+- **幂等**：已执行版本记录在 `parrot_schema_migrations` 表，不会重复执行
+- **成熟执行器**：由 golang-migrate 负责版本推进、dirty 状态和 MySQL 锁
+- **旧库兼容**：如果旧 `schema_migrations` 表存在且新表不存在，会自动读取旧版本并 `force` 到对应版本，再继续执行新迁移
 
 ### 新增表结构变更
 
@@ -223,13 +224,19 @@ make create-migration NAME=add_users_table
 ```
 
 ```sql
--- 0004_add_users_table
+-- 0004_add_users_table.up.sql
 
 CREATE TABLE users (
   id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   email VARCHAR(255) NOT NULL UNIQUE,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+```
+
+```sql
+-- 0004_add_users_table.down.sql
+
+DROP TABLE IF EXISTS users;
 ```
 
 触发迁移：
@@ -246,7 +253,7 @@ make compose-migrate
 docker compose --env-file .env exec mysql mysql -uroot -p"$MYSQL_ROOT_PASSWORD" parrot
 
 # 查看已执行的迁移
-SELECT * FROM schema_migrations ORDER BY executed_at;
+SELECT * FROM parrot_schema_migrations ORDER BY version;
 ```
 
 ---
@@ -346,6 +353,7 @@ MySQL 数据存储在 Docker 命名卷 `parrot_mysql-data` 中。
 项目的基础镜像统一同步到阿里云 ACR，命名不带 `parrot` 前缀，方便其他项目复用：
 
 - `${ALIYUN_REGISTRY}/${IMAGE_NAMESPACE}/base-bun:1-alpine`
+- `${ALIYUN_REGISTRY}/${IMAGE_NAMESPACE}/base-migrate:v4.19.1`
 - `${ALIYUN_REGISTRY}/${IMAGE_NAMESPACE}/base-nginx:1.27-alpine`
 - `${ALIYUN_REGISTRY}/${IMAGE_NAMESPACE}/base-mysql:8.4.4`
 
@@ -355,13 +363,7 @@ MySQL 数据存储在 Docker 命名卷 `parrot_mysql-data` 中。
 make sync-base-images
 ```
 
-如果只想在缺失时自动补齐，继续使用：
-
-```bash
-make ensure-base-images
-```
-
-日常 `make start` 默认**不再检查** ACR 中的基础镜像是否存在，前提是你已经手动同步过一次。`make push` 仍会自动检查并在缺失时补齐。
+日常 `make start` 默认**不再检查** ACR 中的基础镜像是否存在，前提是你已经手动同步过一次。
 
 ### 一键发布到生产
 
@@ -376,7 +378,7 @@ make remote-deploy
 3. 在服务器上：
    - 拉取最新镜像
    - 启动 MySQL（若未运行）
-   - 自动执行 SQL 迁移
+   - 通过 golang-migrate 自动执行 SQL 迁移
    - 滚动重启 backend + nginx（不重建镜像）
    - 清理旧镜像
 4. **`make remote-verify`**：验证健康检查端点，失败则自动触发回滚
@@ -420,38 +422,44 @@ make remote-rollback
 | 方法 | 路径                     | 描述                                                       | 响应示例                                                     |
 | ---- | ------------------------ | ---------------------------------------------------------- | ------------------------------------------------------------ |
 | GET  | `/healthz`               | 后端存活检查（含 DB 连通性），供 Docker/nginx 健康检查使用 | `{"status":"ok","service":"backend","database":"connected"}` |
-| POST | `/api/health`            | 服务健康状态 + 版本                                        | `{"status":"ok","database":"connected","version":"1.0.0"}`   |
+| POST | `/api/health`            | 服务健康状态 + 版本                                        | `{"success":true,"data":{...}}`                              |
 | POST | `/api/v1/system/summary` | 应用信息 + 新闻统计                                        | 见下方示例                                                   |
-| POST | `/api/v1/news`           | 全部已发布新闻列表（按发布时间倒序）                       | `{"items":[...]}`                                            |
-| POST | `/api/v1/meta`           | 端口元数据                                                 | `{"appName":"...","ports":{...}}`                            |
+| POST | `/api/v1/news`           | 全部已发布新闻列表（按发布时间倒序）                       | `{"success":true,"data":{"items":[...]}}`                    |
+| POST | `/api/v1/meta`           | 端口元数据                                                 | `{"success":true,"data":{"appName":"...","ports":{...}}}`    |
 
-**`GET /api/v1/system/summary` 响应示例：**
+**`POST /api/v1/system/summary` 响应示例：**
 
 ```json
 {
-  "appName": "Parrot",
-  "version": "latest",
-  "environment": "production",
-  "publishedNewsCount": 3,
-  "latestPublishedAt": "2026-03-22 08:30:00",
-  "services": ["React 19 + Rsbuild", "Hono + Bun", "Bun.sql (MySQL)", "Nginx + Docker Compose"]
+  "success": true,
+  "data": {
+    "appName": "Parrot",
+    "version": "latest",
+    "environment": "production",
+    "publishedNewsCount": 3,
+    "latestPublishedAt": "2026-03-22 08:30:00",
+    "services": ["React 19 + Rsbuild", "Hono + Bun", "Bun.sql (MySQL)", "Nginx + Docker Compose"]
+  }
 }
 ```
 
-**`GET /api/v1/news` 响应示例：**
+**`POST /api/v1/news` 响应示例：**
 
 ```json
 {
-  "items": [
-    {
-      "id": 1,
-      "slug": "full-stack-foundation",
-      "title": "Full-stack foundation is ready",
-      "summary": "...",
-      "body": "...",
-      "publishedAt": "2026-03-22"
-    }
-  ]
+  "success": true,
+  "data": {
+    "items": [
+      {
+        "id": 1,
+        "slug": "full-stack-foundation",
+        "title": "Full-stack foundation is ready",
+        "summary": "...",
+        "body": "...",
+        "publishedAt": "2026-03-22"
+      }
+    ]
+  }
 }
 ```
 
@@ -459,10 +467,10 @@ make remote-rollback
 
 ```json
 // 404 - 路由不存在
-{ "status": "not_found", "message": "GET /api/v1/xxx not found" }
+{ "success": false, "message": "POST /api/v1/xxx not found" }
 
 // 500 - 服务器内部错误
-{ "status": "error", "message": "具体错误描述" }
+{ "success": false, "message": "具体错误描述" }
 ```
 
 ---
@@ -508,12 +516,13 @@ make remote-rollback
 
 ### 阿里云 ACR（部署时必填）
 
-| 变量              | 示例值                              | 说明                   |
-| ----------------- | ----------------------------------- | ---------------------- |
-| `ALIYUN_REGISTRY` | `registry.cn-hangzhou.aliyuncs.com` | ACR 域名               |
-| `IMAGE_NAMESPACE` | `my-namespace`                      | 命名空间               |
-| `ALIYUN_USERNAME` | `my@example.com`                    | 登录账号               |
-| `ALIYUN_PASSWORD` | —                                   | 登录密码（勿提交 Git） |
+| 变量              | 示例值                              | 说明                    |
+| ----------------- | ----------------------------------- | ----------------------- |
+| `ALIYUN_REGISTRY` | `registry.cn-hangzhou.aliyuncs.com` | ACR 域名                |
+| `IMAGE_NAMESPACE` | `my-namespace`                      | 命名空间                |
+| `ALIYUN_USERNAME` | `my@example.com`                    | 登录账号                |
+| `ALIYUN_PASSWORD` | —                                   | 登录密码（勿提交 Git）  |
+| `MIGRATE_VERSION` | `v4.19.1`                           | golang-migrate 镜像版本 |
 
 ### 远端部署（部署时必填）
 
@@ -546,6 +555,7 @@ make help               # 查看所有可用命令
 
 | 命令                              | 说明                      |
 | --------------------------------- | ------------------------- |
+| `make create-migration NAME=...`  | 创建 up/down 迁移文件     |
 | `make compose-migrate`            | 在容器内执行迁移          |
 | `make db-backup`                  | 手动本地备份              |
 | `make db-restore BACKUP_FILE=...` | 从本地快照恢复            |
@@ -613,13 +623,13 @@ docker compose --env-file .env down -v   # ⚠️ 会清空数据
 make start
 ```
 
-### 迁移报错 "Table already exists"
+### 迁移报错 "Dirty database version"
 
-说明表已存在但 `schema_migrations` 没有记录（手动改过库或迁移记录丢失）。解决方式之一：
+golang-migrate 会在失败时标记 dirty 状态，避免后续迁移继续破坏数据库。先修复失败原因，再确认数据库结构处于哪个版本，最后执行：
 
-```sql
--- 手动标记为已执行
-INSERT INTO schema_migrations (name) VALUES ('0001_init.sql');
+```bash
+docker compose --env-file .env run --rm --no-deps backend bun run migrate force <version>
+make compose-migrate
 ```
 
 ### Nginx 返回 502

@@ -23,8 +23,8 @@ const Home: React.FC = () => {
 
     const loadSummary = async () => {
       const result = await request<SummaryData>('/api/v1/system/summary');
-      if (!cancelled && result.success) {
-        setSummary(result.data!);
+      if (!cancelled && result.success && result.data) {
+        setSummary(result.data);
       }
     };
 
