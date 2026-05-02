@@ -30,7 +30,6 @@
 | `make remote-db-restore BACKUP_FILE=...` | 从快照恢复服务器数据库 |
 | `make remote-setup-backup-cron`          | 在服务器安装定时备份   |
 
-
 ## 迁移机制
 
 迁移文件位于 `apps/backend/migrations/`，以 `NNNN_description.up.sql` / `NNNN_description.down.sql` 成对命名，由 golang-migrate CLI 按版本号顺序执行。
