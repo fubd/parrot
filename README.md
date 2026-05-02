@@ -148,13 +148,13 @@ make type-check    # tsc --noEmit
 
 ### 数据库
 
-| 命令                              | 说明                  |
-| --------------------------------- | --------------------- |
-| `make create-migration NAME=...`  | 创建 up/down 迁移文件 |
-| `make compose-migrate`            | 执行迁移              |
-| `make db-backup`                  | 本地备份              |
-| `make db-restore BACKUP_FILE=...` | 从备份恢复            |
-| `make setup-backup-cron`          | 安装定时备份          |
+| 命令                              | 说明                        |
+| --------------------------------- | --------------------------- |
+| `make create-migration`           | 创建迁移文件（NAME 可省略） |
+| `make compose-migrate`            | 执行迁移                    |
+| `make db-backup`                  | 本地备份                    |
+| `make db-restore BACKUP_FILE=...` | 从备份恢复                  |
+| `make setup-backup-cron`          | 安装定时备份                |
 
 ### 部署
 

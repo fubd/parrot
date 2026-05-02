@@ -19,16 +19,20 @@
 
 ## 相关命令
 
-| 命令                                     | 说明                   |
-| ---------------------------------------- | ---------------------- |
-| `make create-migration NAME=...`         | 创建 up/down 迁移文件  |
-| `make compose-migrate`                   | 在容器内执行迁移       |
-| `make db-backup`                         | 手动本地备份           |
-| `make db-restore BACKUP_FILE=...`        | 从本地快照恢复         |
-| `make setup-backup-cron`                 | 安装本地定时备份       |
-| `make remote-db-backup`                  | 在服务器创建快照       |
-| `make remote-db-restore BACKUP_FILE=...` | 从快照恢复服务器数据库 |
-| `make remote-setup-backup-cron`          | 在服务器安装定时备份   |
+| 命令                                     | 说明                             |
+| ---------------------------------------- | -------------------------------- |
+| `make create-migration [NAME=...]`       | 创建 up/down 迁移（NAME 可省略） |
+| `make compose-migrate`                   | 执行数据库迁移（默认 up）        |
+| `make migrate ARGS="down 1"`             | 回滚迁移                         |
+| `make migrate ARGS="force 3"`            | 强制标记版本                     |
+| `make migrate ARGS="version"`            | 查看当前迁移版本                 |
+| `make db-status`                         | 查看版本和 dirty 状态            |
+| `make db-backup`                         | 手动本地备份                     |
+| `make db-restore BACKUP_FILE=...`        | 从本地快照恢复                   |
+| `make setup-backup-cron`                 | 安装本地定时备份                 |
+| `make remote-db-backup`                  | 在服务器创建快照                 |
+| `make remote-db-restore BACKUP_FILE=...` | 从快照恢复服务器数据库           |
+| `make remote-setup-backup-cron`          | 在服务器安装定时备份             |
 
 ## 迁移机制
 
@@ -60,12 +64,18 @@ make create-migration NAME=描述 → 编辑 up/down SQL → make compose-migrat
 ### 创建迁移文件
 
 ```bash
+# 指定名称
 make create-migration NAME=add_users_table
 # → Created: apps/backend/migrations/0004_add_users_table.up.sql
 # → Created: apps/backend/migrations/0004_add_users_table.down.sql
+
+# 省略 NAME，自动生成时间戳名
+make create-migration
+# → Created: apps/backend/migrations/0004_migration_20260502143000.up.sql
+# → Created: apps/backend/migrations/0004_migration_20260502143000.down.sql
 ```
 
-自动检测现有最大序号并递增，无需手动查编号。
+序号自动检测并递增，NAME 可省略（默认 `migration_YYYYMMDDHHmmss`）。
 
 ### 执行迁移
 
@@ -73,26 +83,32 @@ make create-migration NAME=add_users_table
 make compose-migrate
 ```
 
-等价于 `docker compose --env-file .env run --rm --no-deps backend bun run migrate`（默认执行 `up`，应用所有未执行的迁移）。
+`compose-migrate` 会先停后端，确保 MySQL 就绪，再执行 `migrate up`（应用所有未执行的迁移），最后重启后端。
+
+轻量级操作（不停止后端），使用 `make migrate`：
+
+```bash
+make migrate ARGS="down 1"    # 回滚
+make migrate ARGS="force 3"   # 强制标记
+make migrate ARGS="version"   # 查看版本
+```
 
 ### 查看版本状态
 
 ```bash
-docker compose --env-file .env exec mysql \
-  mysql -uroot -p"$MYSQL_ROOT_PASSWORD" parrot \
-  -e "SELECT version, dirty FROM parrot_schema_migrations;"
-```
+make db-status
+# 输出: version | dirty
+# dirty=0 正常，dirty=1 表示上一次迁移执行失败，需立即修复
 
-`dirty=0` 正常；`dirty=1` 表示上一次迁移执行失败，需立即修复。
+# 或通过 golang-migrate 查看（仅显示版本号）
+make migrate ARGS="version"
+```
 
 ### 回滚
 
 ```bash
-# 回滚 1 个版本
-docker compose --env-file .env run --rm --no-deps backend bun run migrate down 1
-
-# 回滚所有迁移
-docker compose --env-file .env run --rm --no-deps backend bun run migrate down -1
+make migrate ARGS="down 1"     # 回滚 1 个版本
+make migrate ARGS="down -1"    # 回滚所有迁移
 ```
 
 > 回滚会执行 `.down.sql`，请确认 down 文件内容正确。不可安全回滚的迁移应在 down 文件中写 no-op 注释。
@@ -100,18 +116,17 @@ docker compose --env-file .env run --rm --no-deps backend bun run migrate down -
 ### 跳转到指定版本
 
 ```bash
-docker compose --env-file .env run --rm --no-deps backend bun run migrate goto 2
+make migrate ARGS="goto 2"
 ```
 
 ### 强制标记版本（修复 dirty 状态）
 
 ```bash
 # 1. 确认数据库结构当前与哪个版本一致
-docker compose --env-file .env exec mysql \
-  mysql -uroot -p"$MYSQL_ROOT_PASSWORD" parrot -e "SHOW TABLES;"
+make db-status
 
 # 2. 强制标记（仅改版本号，不执行 SQL）
-docker compose --env-file .env run --rm --no-deps backend bun run migrate force 3
+make migrate ARGS="force 3"
 
 # 3. 重新执行迁移
 make compose-migrate

@@ -46,7 +46,7 @@ BACKEND_CACHE_ARGS :=
 NGINX_CACHE_ARGS :=
 endif
 
-.PHONY: help guard-stack-env guard-bun install build frontend-build type-check lint format format-check dev-backend create-migration compose-migrate start down restart logs ps watch _ensure-watch _stop-watch acr-login sync-base-images compose-build push remote-sync \
+.PHONY: help guard-stack-env guard-bun install build frontend-build type-check lint format format-check dev-backend create-migration compose-migrate migrate db-status start down restart logs ps watch _ensure-watch _stop-watch acr-login sync-base-images compose-build push remote-sync \
 	remote-deploy remote-verify remote-rollback remote-logs db-backup db-restore remote-db-backup remote-db-restore \
 	setup-backup-cron remote-setup-backup-cron
 
@@ -66,7 +66,10 @@ help:
 	@printf "  %-26s %s\n" "format" "Run oxfmt across the repository"
 	@printf "  %-26s %s\n" "format-check" "Check formatting with oxfmt"
 	@printf "  %-26s %s\n" "dev-backend" "Start the backend in Docker (recreates container)"
-	@printf "  %-26s %s\n" "create-migration" "Create a numbered migration file (NAME=required)"
+	@printf "  %-26s %s\n" "create-migration" "Create a numbered migration (NAME=optional, auto-generates)"
+	@printf "  %-26s %s\n" "compose-migrate" "Run migrations in backend container"
+	@printf "  %-26s %s\n" "migrate" "Run migrate command (ARGS=\"down 1\" / \"force 3\")"
+	@printf "  %-26s %s\n" "db-status" "Show migration version and dirty status"
 	@printf "  %-26s %s\n" "db-backup" "Create a compressed MySQL backup under $(BACKUP_DIR)"
 	@printf "  %-26s %s\n" "db-restore" "Restore MySQL from BACKUP_FILE=/path/to/dump.sql.gz"
 	@printf "  %-26s %s\n" "setup-backup-cron" "Install a daily backup cron job on this machine"
@@ -113,12 +116,11 @@ dev-backend:
 	@$(LOCAL_COMPOSE) up -d --force-recreate backend
 
 create-migration:
-ifndef NAME
-	$(error NAME is required. Usage: make create-migration NAME=add_users_table)
-endif
 	@last=$$(ls apps/backend/migrations/*.up.sql 2>/dev/null | sed 's|.*/||;s/_.*//' | sort -n | tail -1); \
 	next=$$((10#$${last:-0} + 1)); \
-	versioned_name="$$(printf '%04d' $$next)_$(NAME)"; \
+	name="$(NAME)"; \
+	if [ -z "$$name" ]; then name="migration_$$(date +%Y%m%d%H%M%S)"; fi; \
+	versioned_name="$$(printf '%04d' $$next)_$${name}"; \
 	up_file="apps/backend/migrations/$${versioned_name}.up.sql"; \
 	down_file="apps/backend/migrations/$${versioned_name}.down.sql"; \
 	printf '%s\n%s\n' "-- $${versioned_name} up" "" > "$$up_file"; \
@@ -243,6 +245,19 @@ compose-migrate: guard-stack-env
 	@$(LOCAL_COMPOSE) stop backend 2>/dev/null || true
 	$(LOCAL_COMPOSE) up -d --wait mysql
 	$(LOCAL_COMPOSE) run --rm --no-deps backend bun run migrate
+
+# Lightweight migrate subcommand runner — no service stops.
+# Defaults to 'up' when ARGS is not set. Examples:
+#   make migrate ARGS="down 1"
+#   make migrate ARGS="force 3"
+#   make migrate ARGS="version"
+migrate: guard-stack-env
+	@$(LOCAL_COMPOSE) up -d --wait mysql
+	$(LOCAL_COMPOSE) run --rm --no-deps backend bun run migrate $(ARGS)
+
+db-status: guard-stack-env
+	@$(LOCAL_COMPOSE) exec mysql mysql -uroot -p"$(MYSQL_ROOT_PASSWORD)" $(MYSQL_DATABASE) \
+	 -e "SELECT version, dirty FROM parrot_schema_migrations;"
 
 start: guard-stack-env install frontend-build compose-build compose-migrate
 	$(LOCAL_COMPOSE) up -d --remove-orphans backend nginx
