@@ -17,6 +17,20 @@
 
 ---
 
+## 相关命令
+
+| 命令                                     | 说明                   |
+| ---------------------------------------- | ---------------------- |
+| `make create-migration NAME=...`         | 创建 up/down 迁移文件  |
+| `make compose-migrate`                   | 在容器内执行迁移       |
+| `make db-backup`                         | 手动本地备份           |
+| `make db-restore BACKUP_FILE=...`        | 从本地快照恢复         |
+| `make setup-backup-cron`                 | 安装本地定时备份       |
+| `make remote-db-backup`                  | 在服务器创建快照       |
+| `make remote-db-restore BACKUP_FILE=...` | 从快照恢复服务器数据库 |
+| `make remote-setup-backup-cron`          | 在服务器安装定时备份   |
+
+
 ## 迁移机制
 
 迁移文件位于 `apps/backend/migrations/`，以 `NNNN_description.up.sql` / `NNNN_description.down.sql` 成对命名，由 golang-migrate CLI 按版本号顺序执行。
@@ -103,69 +117,6 @@ docker compose --env-file .env run --rm --no-deps backend bun run migrate force 
 # 3. 重新执行迁移
 make compose-migrate
 ```
-
----
-
-## 迁移示例
-
-### 添加表
-
-```sql
--- 0004_add_users_table.up.sql
-CREATE TABLE users (
-  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-  email VARCHAR(255) NOT NULL UNIQUE,
-  name VARCHAR(100) NOT NULL DEFAULT '',
-  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-```sql
--- 0004_add_users_table.down.sql
-DROP TABLE IF EXISTS users;
-```
-
-### 添加字段
-
-```sql
--- 0005_add_users_status.up.sql
-ALTER TABLE users
-  ADD COLUMN status ENUM('active', 'inactive') NOT NULL DEFAULT 'active' AFTER name,
-  ADD COLUMN avatar_url VARCHAR(500) DEFAULT NULL;
-```
-
-### 修改字段
-
-```sql
--- 0006_widen_users_name.up.sql
-ALTER TABLE users
-  MODIFY COLUMN name VARCHAR(200) NOT NULL DEFAULT '';
-```
-
-### 删除字段
-
-```sql
--- 0007_drop_users_avatar.up.sql
-ALTER TABLE users
-  DROP COLUMN avatar_url;
-```
-
-### 删除表
-
-```sql
--- 0008_drop_legacy_logs.up.sql
-DROP TABLE IF EXISTS legacy_logs;
-```
-
-### 添加索引
-
-```sql
--- 0009_add_users_status_idx.up.sql
-ALTER TABLE users
-  ADD INDEX idx_users_status (status, created_at DESC);
-```
-
----
 
 ## 迁移规则
 
@@ -286,16 +237,3 @@ MySQL 数据存储在 Docker 命名卷 `parrot_mysql-data` 中。
 | 换服务器迁移             | 需导出   | 需先 `make remote-db-backup`，在新服务器恢复 |
 
 ---
-
-## 相关命令
-
-| 命令                                     | 说明                   |
-| ---------------------------------------- | ---------------------- |
-| `make create-migration NAME=...`         | 创建 up/down 迁移文件  |
-| `make compose-migrate`                   | 在容器内执行迁移       |
-| `make db-backup`                         | 手动本地备份           |
-| `make db-restore BACKUP_FILE=...`        | 从本地快照恢复         |
-| `make setup-backup-cron`                 | 安装本地定时备份       |
-| `make remote-db-backup`                  | 在服务器创建快照       |
-| `make remote-db-restore BACKUP_FILE=...` | 从快照恢复服务器数据库 |
-| `make remote-setup-backup-cron`          | 在服务器安装定时备份   |
